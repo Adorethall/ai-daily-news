@@ -50,6 +50,13 @@ class NewsItem:
 class Config:
     """配置管理"""
     def __init__(self):
+        # 加载.env文件
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(os.path.join(BASE_DIR, '.env'))
+        except ImportError:
+            pass  # 如果python-dotenv没安装，就从环境变量读取
+        
         self.searxng_url = os.environ.get("SEARCHENGINE_URL", "http://localhost:8080")
         self.default_chat_id = os.environ.get("DEFAULT_CHAT_ID", "")
         self.feishu_webhook = os.environ.get("FEISHU_WEBHOOK_URL", "")
@@ -386,8 +393,12 @@ class FeishuPusher:
             # 判断内容是否已经是交互式卡片JSON
             import json
             if content.strip().startswith('{') and content.strip().endswith('}'):
-                # 已经是JSON格式，直接发送
-                data = json.loads(content)
+                # 已经是交互式卡片JSON，直接包装发送
+                card_content = json.loads(content)
+                data = {
+                    "msg_type": "interactive",
+                    "card": card_content
+                }
             else:
                 # 转换为post格式
                 data = {
@@ -474,21 +485,185 @@ class AIDailyNews:
         if categorized["company"]:
             focus = categorized["company"][0].company
         
-        # 7. 生成Markdown
-        print("[INFO] Generating Markdown...")
+        # 7. 生成交互式卡片JSON（飞书格式）
+        print("[INFO] Generating interactive card...")
+        today = datetime.datetime.now()
+        yyyy = today.strftime('%Y')
+        mm = today.strftime('%m')
+        dd = today.strftime('%d')
+        
+        # 构建要点
+        points = []
+        count = 0
+        if categorized["company"]:
+            for item in categorized["company"]:
+                if count < 3:
+                    points.append(f"**{item.company}**")
+                    count += 1
+        summary_point = '、'.join(points)
+        
+        # 构建飞书交互式卡片JSON
+        card_json = self._build_interactive_card(categorized, yyyy, mm, dd, summary_point)
+        
+        # 8. 保存markdown和JSON
         generator = MarkdownGenerator(date)
-        content = generator.generate(categorized, focus)
+        md_content = generator.generate(categorized, focus)
+        filepath = generator.save(md_content)
         
-        # 8. 保存
-        filepath = generator.save(content)
-        print(f"[INFO] Saved to {filepath}")
+        # 保存JSON卡片
+        json_filepath = os.path.join(os.path.dirname(filepath), f"daily-{date}.json")
+        with open(json_filepath, 'w', encoding='utf-8') as f:
+            f.write(card_json)
         
-        # 9. 推送
+        print(f"[INFO] Saved to {filepath} and {json_filepath}")
+        
+        # 9. 推送（推送JSON卡片）
         if push:
             print("[INFO] Pushing...")
-            self.pusher.push_markdown(content, chat_id)
+            self.pusher.push_markdown(card_json, chat_id)
         
-        return content, filepath
+        return card_json, filepath
+    
+    def _build_interactive_card(self, categorized: Dict[str, List[NewsItem]], yyyy: str, mm: str, dd: str, summary: str) -> str:
+        """构建飞书交互式卡片JSON"""
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"📰 AI 日报 · {yyyy}年{int(mm)}月{int(dd)}日"},
+                "template": "blue"
+            },
+            "elements": []
+        }
+        
+        # 收集各类新闻
+        domestic_items = []
+        overseas_items = []
+        
+        # 区分国内/海外
+        domestic_companies = ["字节", "字节跳动", "DeepSeek", "智谱", "智谱AI", "阿里", "阿里巴巴", "腾讯", "百度", "政策"]
+        overseas_companies = ["Anthropic", "OpenAI", "Google", "Meta", "Microsoft", "Anthropic Claude"]
+        
+        for item in categorized["company"]:
+            company = item.company or ""
+            if any(dc.lower() in company.lower() for dc in domestic_companies):
+                if len(domestic_items) < 3:
+                    domestic_items.append(item)
+            elif any(oc.lower() in company.lower() for oc in overseas_companies):
+                if len(overseas_items) < 3:
+                    overseas_items.append(item)
+        
+        # 如果还不够，从breaking补充
+        if len(domestic_items) == 0 and categorized["breaking"]:
+            for item in categorized["breaking"]:
+                if len(domestic_items) < 3:
+                    domestic_items.append(item)
+        
+        # 今日要点 - 重新生成
+        points = []
+        added = set()
+        for item in overseas_items + domestic_items:
+            company = item.company or ""
+            if company and company not in added:
+                points.append(f"**{company}**")
+                added.add(company)
+                if len(points) >= 3:
+                    break
+        summary_point = '、'.join(points) if points else "今日AI资讯"
+        
+        # 今日要点
+        card["elements"].append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"今日要点：{summary_point}"
+            }
+        })
+        card["elements"].append({"tag": "hr"})
+        
+        # 头条 - 取前三条重要新闻
+        content = "**🔥 头条**\n\n"
+        all_important = []
+        if overseas_items:
+            all_important.extend(overseas_items[:2])
+        if domestic_items:
+            all_important.extend(domestic_items[:1])
+        for item in all_important[:3]:
+            company = item.company or "头条"
+            summary_text = item.summary[:80].replace('\n', ' ') + ('...' if len(item.summary) > 80 else '')
+            content += f"**【{company}】** {item.title}\n{summary_text}\n[🔗 原文链接]({item.url})\n\n"
+        if content.strip() != "**🔥 头条**\n\n":
+            card["elements"].append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content.strip()}
+            })
+            card["elements"].append({"tag": "hr"})
+        
+        # 国内动态
+        if len(domestic_items) > 0:
+            content = "**🇨🇳 国内动态**\n\n"
+            for item in domestic_items:
+                company = item.company or ""
+                summary_text = item.summary[:70].replace('\n', ' ') + ('...' if len(item.summary) > 70 else '')
+                content += f"**【{company}】** {item.title}\n{summary_text}\n[🔗 原文链接]({item.url})\n\n"
+            card["elements"].append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content.strip()}
+            })
+            card["elements"].append({"tag": "hr"})
+        
+        # 海外动态
+        if len(overseas_items) > 0:
+            content = "**🌐 海外动态**\n\n"
+            for item in overseas_items:
+                company = item.company or ""
+                summary_text = item.summary[:70].replace('\n', ' ') + ('...' if len(item.summary) > 70 else '')
+                content += f"**【{company}】** {item.title}\n{summary_text}\n[🔗 原文链接]({item.url})\n\n"
+            card["elements"].append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content.strip()}
+            })
+            card["elements"].append({"tag": "hr"})
+        
+        # 产业与资本 - 如果有更多新闻
+        remaining = []
+        for item in categorized["company"]:
+            if item not in all_important and item not in domestic_items and item not in overseas_items:
+                remaining.append(item)
+        
+        if len(remaining) > 0:
+            content = "**📈 产业与资本**\n\n"
+            for item in remaining[:2]:
+                company = item.company or "产业"
+                summary_text = item.summary[:70].replace('\n', ' ') + ('...' if len(item.summary) > 70 else '')
+                content += f"**【{company}】** {item.title}\n{summary_text}\n[🔗 原文链接]({item.url})\n\n"
+            card["elements"].append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content.strip()}
+            })
+            card["elements"].append({"tag": "hr"})
+        
+        # 研究前沿
+        if categorized["research"] and len(categorized["research"]) > 0:
+            content = "**🔬 研究前沿**\n\n"
+            for item in categorized["research"][:2]:
+                summary_text = item.summary[:60].replace('\n', ' ') + ('...' if len(item.summary) > 60 else '')
+                content += f"**{item.title}**\n{summary_text}\n[🔗 原文链接]({item.url})\n\n"
+            card["elements"].append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content.strip()}
+            })
+            card["elements"].append({"tag": "hr"})
+        
+        # 页脚
+        card["elements"].append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"*数据来源：综合公开资讯 · 截至{yyyy}年{int(mm)}月{int(dd)}日北京时间"
+            }
+        })
+        
+        return json.dumps(card, ensure_ascii=False)
 
 def main():
     parser = argparse.ArgumentParser(description="AI Daily News Generator")
