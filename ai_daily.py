@@ -53,6 +53,8 @@ class Config:
         self.searxng_url = os.environ.get("SEARCHENGINE_URL", "http://localhost:8080")
         self.default_chat_id = os.environ.get("DEFAULT_CHAT_ID", "")
         self.feishu_webhook = os.environ.get("FEISHU_WEBHOOK_URL", "")
+        # 额外的webhooks（多个用逗号分隔）
+        self.extra_webhooks = os.environ.get("EXTRA_FEISHU_WEBHOOKS", "")
         
         # 重点关注公司
         self.focus_companies = [
@@ -87,14 +89,14 @@ class NewsFetcher:
     def search_web(self, query: str, category: str = "news") -> List[Dict[str, Any]]:
         """使用SearXNG搜索"""
         try:
-            params = {
+            data = {
                 "q": query,
                 "format": "json",
                 "category": category,
                 "language": "all",
             }
             url = f"{self.config.searxng_url}/search"
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.post(url, data=data, timeout=10)
             if response.status_code == 200:
                 return response.json().get("results", [])
         except Exception as e:
@@ -352,46 +354,63 @@ class FeishuPusher:
     
     def push_markdown(self, content: str, chat_id: str = None) -> bool:
         """推送Markdown到飞书群
-        使用OpenClaw原生消息机制时不需要Webhook
+        推送到所有配置的webhook
         """
-        target_chat = chat_id or self.config.default_chat_id
-        if not target_chat:
-            print("[ERROR] No chat_id configured")
-            return False
+        success = True
         
-        # 如果配置了Webhook，使用Webhook推送
+        # 推送主webhook
         if self.config.feishu_webhook:
-            return self._push_via_webhook(content)
+            if not self._push_via_webhook(content, self.config.feishu_webhook):
+                success = False
         
-        # 否则输出文件路径，由OpenClaw调用message工具推送
-        print(f"[INFO] Ready to push to chat: {target_chat}")
-        print(f"[INFO] Content:\n{content[:500]}...")
-        return True
+        # 推送额外的webhooks
+        if self.config.extra_webhooks:
+            for webhook in self.config.extra_webhooks.split(','):
+                webhook = webhook.strip()
+                if webhook:
+                    if not self._push_via_webhook(content, webhook):
+                        success = False
+        
+        # 如果配置了chat_id，说明使用OpenClaw原生推送
+        target_chat = chat_id or self.config.default_chat_id
+        if target_chat and not self.config.feishu_webhook:
+            print(f"[INFO] Ready to push to chat: {target_chat}")
+            print(f"[INFO] Content:\n{content[:500]}...")
+        
+        return success
     
-    def _push_via_webhook(self, content: str) -> bool:
+    def _push_via_webhook(self, content: str, webhook_url: str = None) -> bool:
         """通过Webhook推送"""
+        url = webhook_url or self.config.feishu_webhook
         try:
-            # 飞书富文本格式
-            data = {
-                "msg_type": "post",
-                "content": {
-                    "post": {
-                        "zh_cn": {
-                            "title": content.split('\n')[0].replace('#', '').strip(),
-                            "content": self._convert_to_feishu_content(content)
+            # 判断内容是否已经是交互式卡片JSON
+            import json
+            if content.strip().startswith('{') and content.strip().endswith('}'):
+                # 已经是JSON格式，直接发送
+                data = json.loads(content)
+            else:
+                # 转换为post格式
+                data = {
+                    "msg_type": "post",
+                    "content": {
+                        "post": {
+                            "zh_cn": {
+                                "title": content.split('\n')[0].replace('#', '').strip(),
+                                "content": self._convert_to_feishu_content(content)
+                            }
                         }
                     }
                 }
-            }
-            response = requests.post(self.config.feishu_webhook, json=data, timeout=10)
+            response = requests.post(url, json=data, timeout=10)
             result = response.json()
             if result.get("code") == 0:
-                print("[INFO] Push succeeded")
+                print("[INFO] Push succeeded to webhook")
                 return True
             else:
-                print(f"[ERROR] Push failed: {result}")
+                print(f"[ERROR] Push failed to webhook: {result}")
+                return False
         except Exception as e:
-            print(f"[ERROR] Push exception: {e}")
+            print(f"[ERROR] Push exception to webhook: {e}")
         return False
     
     def _convert_to_feishu_content(self, md: str) -> List[List[Dict]]:
