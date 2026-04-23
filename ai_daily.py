@@ -427,7 +427,7 @@ class AIDailyNews:
         
         # 1. 抓取国内媒体
         print("[INFO] Fetching domestic media...")
-        media_items = self.config.fetcher.fetch_all_domestic_media()
+        media_items = self.fetcher.fetch_all_domestic_media()
         all_items.extend(media_items)
         
         # 2. 抓取arXiv
