@@ -1,150 +1,90 @@
 ---
 name: ai-daily-news
-description: 每日AI资讯推送，自动收集国内外科技媒体、学术前沿、大厂动态，整理成日报推送至飞书群
-author: ArkClaw
-version: 1.0.0
-triggers:
-  - "AI日报"
-  - "ai日报"
-  - "每日AI"
-  - "AI资讯"
-metadata: {"clawdbot":{"emoji":"📰","requires":{"bins":["python3","uv"]},"config":{"env":{"FEISHU_WEBHOOK_URL":{"description":"飞书群机器人Webhook URL","required":false},"DEFAULT_CHAT_ID":{"description":"默认推送群chat_id","required":false},"SEARCHENGINE_URL":{"description":"搜索引擎服务URL (SearXNG)","default":"http://localhost:8080","required":false}}}}}
+description: 生成当日 AI 行业日报。当用户要求"AI日报"、"AI资讯"、"今天的AI新闻"、"帮我整理AI动态"、"生成AI日报"、"搜索AI资讯"等时，必须使用本 skill。本 skill 会自动搜索当天最新资讯，分类整理为结构化日报，并渲染成精美可读的内嵌卡片式日报。即使用户只是说"AI资讯"、"AI早报"、"给我看看今天AI的新闻"也应触发本 skill。
 ---
 
-# AI每日资讯日报 Skill
+# AI 日报 Skill
 
-自动收集国内外AI领域资讯，整理成结构化日报推送到指定飞书群。
+每日自动搜索、整理、渲染 AI 行业资讯日报。
+
+---
 
 ## 工作流程
 
-```
-配置信息源 → 爬取/搜索资讯 → AI筛选过滤去重 → 格式整理 → 推送至群聊
-```
+### 第一步：搜索资讯
 
-### 1. 信息源配置
-
-支持以下资讯来源：
-
-- **国内科技媒体**: 36氪、智东西、机器之心、量子位、虎嗅、钛媒体
-- **海外科技媒体**: TechCrunch、The Verge、Wired、Bloomberg、MIT Technology Review
-- **学术前沿**: arXiv 最新AI论文 (cs.CV, cs.LG, cs.CL)
-- **大厂动态**: Anthropic、OpenAI、Google、Meta、Microsoft、ByteDance、Alibaba、智谱等
-
-### 2. 安装依赖
-
-```bash
-uv sync
-```
-
-### 3. 使用方法
-
-#### 生成今日AI日报（不推送）
-```bash
-uv run {baseDir}/ai_daily.py generate --date today
-```
-
-#### 生成并推送到默认群
-```bash
-uv run {baseDir}/ai_daily.py generate --date today --push
-```
-
-#### 推送到指定群
-```bash
-uv run {baseDir}/ai_daily.py push --chat-id oc_xxx --file output/daily-2026-04-23.md
-```
-
-#### 仅更新 arXiv 论文
-```bash
-uv run {baseDir}/ai_daily.py fetch arxiv --categories cs.CV cs.LG cs.CL --limit 10
-```
-
-#### 仅搜索大厂动态
-```bash
-uv run {baseDir}/ai_daily.py search --company Anthropic --days 7
-```
-
-## 配置说明
-
-在环境变量中配置：
-
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| `FEISHU_WEBHOOK_URL` | 飞书机器人Webhook地址 | 否（使用OpenClaw原生消息推送时不需要） |
-| `DEFAULT_CHAT_ID` | 默认推送的飞书群chat_id | 是 |
-| `SEARCHENGINE_URL` | SearXNG 搜索引擎地址 | 否（使用默认值） |
-
-## 日报格式
+同时发起 **3 组搜索查询**，覆盖国内外：
 
 ```
-# 🤖 AI日报 - YYYY-MM-DD
+1. "AI人工智能最新资讯 {今日年月日}" # 国内综合
+2. "OpenAI Google DeepSeek Anthropic AI news today" # 海外巨头动态
+3. "人工智能 产业 政策 {今日年月日}" # 产业/政策
+```
 
-**重点关注：{今日焦点}**
+日期格式示例：`2026年4月23日`，英文搜索用 `April 23 2026`。
+
+> 如果搜索结果较少或内容重复，可额外补搜：`"AI芯片 算力 大模型 最新"` 或 `"artificial intelligence latest 2026"`
 
 ---
 
-## 🔔 今日要闻
+### 第二步：整理分类
 
-### 1. {标题}
-{摘要，100-200字}
+将搜索结果按以下分类归纳，每条提炼为 **标题 + 2-3句摘要**：
 
----
+| 分类 | 说明 |
+|------|------|
+| 🔥 头条 | 当日最重要的 1-3 条，优先选有实质进展的 |
+| 🇨🇳 国内动态 | 国内大厂、政策、学术研究 |
+| 🌐 海外动态 | OpenAI、Google、Meta、Anthropic 等 |
+| 📈 产业与资本 | 融资、算力、芯片、股市、供应链 |
+| 🔬 研究前沿（可选）| 有新论文或技术突破时添加 |
 
-## 🏢 科技巨头动态
-
-### {公司}
-- {动态1}
-- {动态2}
-
----
-
-## 🔬 研究前沿
-
-### {论文标题}
-- 作者：{作者}
-- 摘要：{简要摘要}
-- 链接：{arXiv链接}
+**整理原则：**
+- 每条新闻提炼核心信息，不照搬原文，以自己语言概括
+- 头条选真正重量级事件（产品发布、重大政策、技术突破、重要人事）
+- 如某类别当天没有新闻，可省略该分类
+- 最多每类 3-4 条，保持日报精简可读
 
 ---
 
-## 🛠 产品与工具
+### 第三步：提取3个数字亮点
 
-### {产品}
-- {简介}
-
----
-
-## 📊 行业观察
-
-{简短行业观察总结}
+从资讯中选出 3 个最有代表性的数字或指标，用于日报顶部的数据卡片展示。例如：
+- 融资金额、营收数字
+- 技术指标（参数量、上下文长度、延迟）
+- 用户/市场规模
 
 ---
 
-*每天上午10点准时更新*
-```
+### 第四步：渲染日报卡片
 
-## 功能特点
+使用 `visualize:show_widget` 工具渲染，参考 `references/template.md` 中的 HTML 模板。
 
-- ✅ 多源信息聚合
-- ✅ AI智能去重过滤
-- ✅ 重点资讯优先排序
-- ✅ 自动格式整理
-- ✅ 支持定时推送
-- ✅ 可配置重点关注公司
-- ✅ arXiv 每日论文追踪
+渲染要点：
+- 顶部展示日期徽章 + 大标题 + 当日一句话概要
+- 3个数字亮点用 stat-box 横排展示
+- 每条新闻用 card 组件，左上角用 tag 标明来源/分类（如 OpenAI、政策、算力等）
+- 底部注明数据来源和截至时间
+- 严格遵循 Imagine Design System 规范（CSS变量、无硬编码颜色、支持深色模式）
 
-## 定时任务
+---
 
-建议使用 cron 定时执行：
+### 第五步：附加引用说明（可选）
 
-```
-# 每天上午10点执行
-0 10 * * * cd /path/to/ai-daily-news && uv run ./ai_daily.py generate --date today --push >> logs/cron.log 2>&1
-```
+渲染完成后，可在对话中用 ` ` 标签简短点评 2-3 条最重要的新闻，让用户有文字摘要可参考。无需逐条引用，保持精简。
 
-## 依赖说明
+---
 
-- Python 3.10+
-- requests
-- beautifulsoup4
-- openai (用于AI筛选去重)
-- arxiv (arXiv API)
+## 注意事项
+
+- **版权**：所有新闻内容必须以自己语言概括，不得直接引用超过15个字的原文片段
+- **时效**：日报应反映当天资讯，搜索查询必须包含当天日期
+- **准确性**：对明显夸张或来源不可靠的信息持保留态度，可标注"据报道"
+- **语言**：默认输出中文日报；若用户用英文提问，可输出英文版
+- **长度**：日报卡片内容不宜过长，每条摘要控制在 50-80 字以内
+
+---
+
+## 参考文件
+
+- `references/template.md` — HTML 卡片模板代码（颜色 tag 映射、CSS 类定义）
